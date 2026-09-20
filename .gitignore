@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+qa/
+data/
+photos/
+*.log
+.env
+.env.*
+!.env.example
+*.zip
+*.exe
+*.map
+Thumbs.db
+.DS_Store

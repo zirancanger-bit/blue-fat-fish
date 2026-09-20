@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'"
+    />
+    <title>蓝色大肥鱼</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="pet-page">
+    <canvas
+      id="pet-canvas"
+      aria-label="蓝色大肥鱼，立体小鲸鱼。点击互动，拖动移动，右键打开菜单。"
+      role="img"
+    ></canvas>
+    <div id="speech" class="speech" role="status" aria-live="polite">
+      <span class="speech-star">✦</span>
+      <p></p>
+    </div>
+    <div id="pet-toolbar" class="pet-toolbar">
+      <button id="open-home" aria-label="打开潮汐小屋">
+        <span class="tiny-star">✦</span><span>大肥鱼</span><span class="toolbar-dot"></span></button
+      ><button id="pet-menu" aria-label="桌宠菜单">···</button>
+    </div>
+    <div id="combo-badge" class="combo-badge" role="status" hidden></div>
+    <div id="focus-badge" class="focus-badge" hidden><span>专注陪伴</span><b>25:00</b></div>
+    <div id="pet-fallback" class="pet-fallback" hidden>
+      <p>蓝色大肥鱼正在整理尾巴</p>
+      <small>画面暂时没有准备好，可以重新试一次。</small>
+      <button id="retry-pet" class="primary-button">重新唤醒大肥鱼</button>
+    </div>
+    <script type="module" src="pet.js"></script>
+  </body>
+</html>
