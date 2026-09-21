@@ -42,6 +42,28 @@ export function createScene(canvas,{studio=false,onEvent=()=>{}}={}){
  schedule();
  const raycaster=new THREE.Raycaster(),point=new THREE.Vector2();
  function hitTest(x,y){if(x<0||y<0||x>width||y>height)return null;point.set(x/width*2-1,1-y/height*2);model.root.updateMatrixWorld(true);raycaster.setFromCamera(point,camera);const hits=raycaster.intersectObjects(model.hitTargets,false);return hits[0]||null;}
+ // Hearts, tail rings and the falling rice and cake are painted outside the pet
+ // silhouette, so the clickable region has to cover them while they exist.
+ const boxMin=new THREE.Vector3(),boxMax=new THREE.Vector3(),boxPoint=new THREE.Vector3(),boxProjected=new THREE.Vector3();
+ function projectBox(min,max,matrix){let l=Infinity,t=Infinity,r=-Infinity,b=-Infinity;
+  for(let i=0;i<8;i++){boxPoint.set(i&1?max.x:min.x,i&2?max.y:min.y,i&4?max.z:min.z);
+   if(matrix)boxPoint.applyMatrix4(matrix);
+   boxProjected.copy(boxPoint).project(camera);
+   const px=(boxProjected.x*.5+.5)*width,py=(.5-boxProjected.y*.5)*height;
+   if(!Number.isFinite(px)||!Number.isFinite(py))return null;
+   l=Math.min(l,px);r=Math.max(r,px);t=Math.min(t,py);b=Math.max(b,py);}
+  return [l,t,r,b];}
+ function effectRects(){const rects=[];model.root.updateMatrixWorld(true);const rootMatrix=model.root.matrixWorld;
+  for(const p of particles){const d=p.userData,s=Math.abs(p.scale.x);
+   if(d.ring){boxMin.set(p.position.x-s,p.position.y-.03,p.position.z-s);boxMax.set(p.position.x+s,p.position.y+.03,p.position.z+s);}
+   else{const r=.04,rise=Math.max(0,d.life-d.age)*(d.vy||0);
+    boxMin.set(p.position.x-r,p.position.y-r,p.position.z-r);boxMax.set(p.position.x+r,p.position.y+r+rise,p.position.z+r);}
+   const rect=projectBox(boxMin,boxMax,rootMatrix);if(rect)rects.push(rect);}
+  for(const p of foodDrops.items()){const d=p.userData,s=Math.abs(p.scale.x)*.5,t=Math.max(0,d.life-d.age);
+   const drift=Math.abs(d.vx)*t,fall=d.vy*t-1.25*t*t,top=p.position.y+s,bottom=Math.min(p.position.y-s,p.position.y+s+fall);
+   boxMin.set(p.position.x-s-drift,bottom,p.position.z-s);boxMax.set(p.position.x+s+drift,top,p.position.z+s);
+   const rect=projectBox(boxMin,boxMax);if(rect)rects.push(rect);}
+  return rects;}
  function applySettings(s){quality=s.quality||'high';model.setAppearance(s.irisColor);animator.followCursor=s.followCursor;animator.reducedMotion=s.reducedMotion;document.documentElement.dataset.motion=s.reducedMotion?'reduced':'full';resize();}
  function renderPose(action,time=1.2,yaw=-.28,{shake=false}={}){stopClock();running=false;posing=true;foodDrops.clear();try{animator.followCursor=false;animator.baseYaw=yaw;model.root.rotation.y=yaw;animator.look={x:0,y:0};animator.carry.weight=action==='settle'?1:0;animator.setDragVelocity(0,0);animator.dragMotion.x=animator.dragMotion.y=0;animator.play(action);animator.time=0;animator.nextBlink=100;animator.blinkAt=-100;for(let t=0;t<time;t+=1/60){if(shake)animator.setDragVelocity(Math.sin(t*11)*.85,Math.cos(t*8)*.35);update(Math.min(1/60,time-t));}renderer.render(scene,camera);return {action:animator.action,triangles:renderer.info.render.triangles};}finally{animator.setDragVelocity(0,0);posing=false;}}
  function capture({width:outW=900,height:outH=1000,action=animator.action,time=1.2,yaw=animator.baseYaw,shake=false}={}){
@@ -50,7 +72,8 @@ export function createScene(canvas,{studio=false,onEvent=()=>{}}={}){
   renderer.setPixelRatio(1);renderer.setSize(outW,outH,false);cameraFrame(outW,outH);renderPose(action,time,yaw,{shake});const url=canvas.toDataURL('image/png');
   renderer.setPixelRatio(oldRatio);renderer.setSize(oldSize.x,oldSize.y,false);cameraFrame(oldSize.x,oldSize.y);animator.followCursor=follow;animator.baseYaw=oldYaw;animator.play(oldAction==='sleep'?'sleep':'idle');running=wasRunning;previous=performance.now();if(running)schedule();return url;
  }
- return {renderer,scene,camera,model,animator,hitTest,burst,applySettings,renderPose,capture,
+ return {renderer,scene,camera,model,animator,hitTest,burst,effectRects,applySettings,renderPose,capture,
+  get canvasSize(){return {width,height};},
   setSuspended(v){suspended=!!v;stopClock();previous=performance.now();if(!suspended)schedule();},
   resume(){stopClock();running=true;previous=performance.now();schedule();},
   getInfo(){return{action:animator.action,fps,drawCalls:renderer.info.render.calls,triangles:renderer.info.render.triangles,particles:particles.length,foodParticles:foodDrops.count,renderedFrames:total,quality,suspended};},

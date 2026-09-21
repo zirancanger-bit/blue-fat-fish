@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('fin', {
   photos: () => ipcRenderer.invoke('fin:photos'),
   focus: (command, minutes) => ipcRenderer.invoke('fin:focus', command, minutes),
   hit: (hit) => ipcRenderer.send('fin:hit', hit),
+  region: (rects) => ipcRenderer.send('fin:region', rects),
+  pointer: (kind, detail) => ipcRenderer.send('fin:pointer', kind, detail),
   menu: () => ipcRenderer.send('fin:menu'),
   retry: () => ipcRenderer.send('fin:retry'),
   drag: (phase, point) => ipcRenderer.send('fin:drag', phase, point),

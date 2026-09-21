@@ -50,5 +50,5 @@ export function createFoodDrops(scene,model,{random=Math.random}={}){
   }
  }
  function clear(){for(const p of pool){group.remove(p);p.material.dispose();}pool.length=0;gate.reset();}
- return {update,clear,get count(){return pool.length;},dispose(){clear();textures.forEach(t=>t.dispose());group.removeFromParent();}};
+ return {update,clear,items:()=>pool,get count(){return pool.length;},dispose(){clear();textures.forEach(t=>t.dispose());group.removeFromParent();}};
 }

@@ -28,9 +28,26 @@ const qaName = process.argv.find((arg) => /^--qa-name=[a-z0-9-]{1,32}$/.test(arg
 const studio = process.argv.includes('--studio');
 let qaCursor = null;
 const cursorPoint = () => (qa && qaCursor ? { ...qaCursor } : screen.getCursorScreenPoint());
-const root = app.isPackaged
-  ? process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath)
-  : path.join(__dirname, '..');
+// An AppImage unpacks into a read-only mount: settings and photos belong next to
+// the .AppImage file, and only fall back to the home directory when that
+// location cannot be written.
+function resolveRoot() {
+  if (!app.isPackaged) return path.join(__dirname, '..');
+  const candidates = [];
+  if (process.env.PORTABLE_EXECUTABLE_DIR) candidates.push(process.env.PORTABLE_EXECUTABLE_DIR);
+  if (process.env.APPIMAGE) candidates.push(path.dirname(process.env.APPIMAGE));
+  candidates.push(path.dirname(process.execPath));
+  for (const dir of candidates) {
+    try {
+      fs.accessSync(dir, fs.constants.W_OK);
+      return dir;
+    } catch {
+      /* Try the next candidate. */
+    }
+  }
+  return path.join(app.getPath('home'), '.blue-fat-fish');
+}
+const root = resolveRoot();
 const dataDir = path.join(root, qa ? `qa/runtime${qaName ? `-${qaName}` : ''}` : 'data');
 const photoDir = path.join(root, qa ? `qa/photos${qaName ? `-${qaName}` : ''}` : 'photos');
 fs.mkdirSync(dataDir, { recursive: true });
@@ -49,6 +66,33 @@ function logFailure(kind, details) {
 app.on('child-process-gone', (_event, details) => {
   if (!['clean-exit', 'killed'].includes(details.reason)) logFailure('child-process', details);
 });
+// Click routing diagnostics. On Linux the pet window is transparent and mostly
+// click-through, so a report of what the app believed about the pointer is the
+// only way to tell a window-region problem from an interaction problem.
+const clickDiagEnabled = qa || process.platform === 'linux' || process.argv.includes('--diag');
+let clickDiagLast = 0;
+function clickDiag(kind, details) {
+  if (!clickDiagEnabled) return;
+  const now = Date.now();
+  if (kind === 'hit' && now - clickDiagLast < 200) return;
+  if (kind === 'hit') clickDiagLast = now;
+  try {
+    const file = path.join(dataDir, 'click-diag.log');
+    if (fs.existsSync(file) && fs.statSync(file).size > 128 * 1024)
+      fs.renameSync(file, path.join(dataDir, `click-diag-${Date.now()}.log`));
+    fs.appendFileSync(file, `${new Date().toISOString()} ${kind} ${JSON.stringify(details)}\n`);
+  } catch {
+    /* Diagnostics must never break the pet. */
+  }
+}
+// Linux/X11 click-through. `setIgnoreMouseEvents` only reacts to cursor polling
+// there (Chromium never forwards mouse moves on X11) and the switch races every
+// click, so the pet window is instead given a static X11 region: the shape of
+// everything it paints. Clicks on the pet then always land and clicks on the
+// transparent area always fall through, with no timing involved.
+const clickModePreference = process.env.FIN_CLICK_MODE;
+let clickMode =
+  process.platform === 'linux' && !studio && clickModePreference !== 'toggle' ? 'shape' : 'toggle';
 let settings;
 try {
   settings = migrateSettings(
@@ -61,6 +105,7 @@ let pet,
   home,
   tray,
   cursorTimer,
+  hitTimer,
   saveTimer,
   roamTimer,
   drag = null,
@@ -143,6 +188,55 @@ function applyWindowLayer() {
     settings.alwaysOnTop,
     process.platform === 'win32' ? 'pop-up-menu' : 'floating',
   );
+}
+// The renderer reports what it paints (pet silhouette, overlays, particles).
+// window shape = those rectangles, so the transparent area stays click-through.
+let regionRects = [];
+let shapeFailures = 0;
+function sanitizeRegion(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const rect of value.slice(0, 512)) {
+    const x = Math.round(Number(rect?.x)),
+      y = Math.round(Number(rect?.y)),
+      width = Math.round(Number(rect?.width)),
+      height = Math.round(Number(rect?.height));
+    if (![x, y, width, height].every(Number.isFinite)) continue;
+    if (width < 1 || height < 1 || width > 4096 || height > 4096) continue;
+    out.push({ x, y, width, height });
+  }
+  return out;
+}
+function applyRegionShape() {
+  if (clickMode !== 'shape' || !pet || pet.isDestroyed() || !regionRects.length) return false;
+  try {
+    pet.setShape(regionRects);
+    return true;
+  } catch (error) {
+    shapeFailures++;
+    clickMode = 'toggle';
+    logFailure('shape', { message: error.message });
+    clickDiag('shape-failed', { message: error.message, rects: regionRects.length });
+    return false;
+  }
+}
+function setIgnore(next, source) {
+  if (ignore === next) return;
+  ignore = next;
+  clickDiag('hit', { ignore: next, source });
+  if (clickMode === 'shape') return; // the window region already routes clicks
+  pet?.setIgnoreMouseEvents(next, { forward: true });
+}
+function regionHitAt(cursor) {
+  if (!pet || pet.isDestroyed() || !regionRects.length) return null;
+  const bounds = pet.getBounds(),
+    x = cursor.x - bounds.x,
+    y = cursor.y - bounds.y;
+  if (x < 0 || y < 0 || x >= bounds.width || y >= bounds.height) return false;
+  for (const rect of regionRects)
+    if (x >= rect.x && y >= rect.y && x < rect.x + rect.width && y < rect.y + rect.height)
+      return true;
+  return false;
 }
 function moveDraggedPet(cursor) {
   if (!drag || !pet) return;
@@ -305,6 +399,7 @@ function createPet() {
     settings.y = b.y;
     save();
   });
+  pet.on('resize', () => applyRegionShape());
   pet.on('blur', () => {
     if (drag) {
       drag = null;
@@ -430,6 +525,7 @@ function wireIPC() {
     version: app.getVersion(),
     desktop: e.sender === pet?.webContents,
     qa,
+    diag: clickDiagEnabled,
   }));
   handle('fin:settings', (_e, patch) => {
     if (!patch || typeof patch !== 'object') return settings;
@@ -487,10 +583,29 @@ function wireIPC() {
       stopRoam();
       lastInteraction = Date.now();
     }
-    const next = !Boolean(hit);
-    if (ignore === next) return;
-    ignore = next;
-    pet.setIgnoreMouseEvents(ignore, { forward: true });
+    // With a window region the main process owns the click-through state: the
+    // renderer's raycast is a round trip behind the poll it is supposed to fix.
+    if (clickMode === 'shape' || regionRects.length) return;
+    setIgnore(!Boolean(hit), 'renderer');
+  });
+  ipcMain.on('fin:region', (e, rects) => {
+    if (e.sender !== pet?.webContents || studio) return;
+    const clean = sanitizeRegion(rects);
+    if (!clean.length) return;
+    const changed = clean.length !== regionRects.length ||
+      clean.some((rect, i) => {
+        const old = regionRects[i];
+        return !old || old.x !== rect.x || old.y !== rect.y ||
+          old.width !== rect.width || old.height !== rect.height;
+      });
+    regionRects = clean;
+    if (!changed) return;
+    clickDiag('region', { rects: clean.length, mode: clickMode });
+    applyRegionShape();
+  });
+  ipcMain.on('fin:pointer', (e, kind, detail) => {
+    if (e.sender !== pet?.webContents) return;
+    clickDiag('pointer', { kind, detail, ignore, mode: clickMode });
   });
   ipcMain.on('fin:menu', (e) => {
     if (isOur(e)) popupMenu();
@@ -542,6 +657,9 @@ function wireIPC() {
       dataDir,
       roaming,
       dragging: !!drag,
+      clickMode,
+      regionRects: regionRects.length,
+      shapeFailures,
       menuActions: MENU_ACTIONS.map(([id]) => id),
     }));
   if (qa)
@@ -559,6 +677,13 @@ else {
   app.whenReady().then(() => {
     wireIPC();
     createPet();
+    clickDiag('startup', {
+      mode: clickMode,
+      platform: process.platform,
+      session: process.env.XDG_SESSION_TYPE || '',
+      wayland: Boolean(process.env.WAYLAND_DISPLAY),
+      root,
+    });
     if (!qa) {
       tray = new Tray(appIcon(32));
       tray.setToolTip('蓝色大肥鱼 · 右键互动，双击打开潮汐小屋');
@@ -612,6 +737,22 @@ else {
         eventSend('focus', focus);
       }
     }, 33);
+    // Fallback click routing. When no window region can be applied (Wayland, or
+    // a shape that the platform rejected) the toggle has to be driven from the
+    // cursor clock here: going through the renderer costs an IPC round trip, and
+    // a click that arrives inside that round trip still falls through.
+    hitTimer = setInterval(() => {
+      if (paused || !pet || pet.isDestroyed() || drag) return;
+      if (clickMode === 'shape' || !regionRects.length) return;
+      const hit = regionHitAt(cursorPoint());
+      if (hit === null) return;
+      pointerOver = hit;
+      if (hit) {
+        stopRoam();
+        lastInteraction = Date.now();
+      }
+      setIgnore(!hit, 'region');
+    }, 16);
     roamTimer = setInterval(() => {
       if (
         settings.roam &&
@@ -661,6 +802,7 @@ app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => {
   quit = true;
   clearInterval(cursorTimer);
+  clearInterval(hitTimer);
   clearInterval(roamTimer);
   clearTimeout(saveTimer);
   if (!ownsInstance) return;
