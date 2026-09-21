@@ -1,5 +1,13 @@
 import { createScene } from './scene.js';
 import { pickLine } from './dialogue.js';
+import {
+  TRANSITION_MS,
+  containsPoint,
+  maskRectsFor,
+  mergeRects,
+  sameRects,
+  toShapeRects,
+} from './region.js';
 const bridge = window.fin,
   canvas = document.querySelector('#pet-canvas'),
   bubble = document.querySelector('#speech'),
@@ -83,7 +91,71 @@ function pointerHit(x, y) {
     x <= b.right &&
     y >= b.top &&
     y <= b.bottom;
-  return ui || Boolean(engine?.hitTest(x, y));
+  // The clickable region covers everything the pet paints, so a click on the
+  // cloak, the legs or the tail tip counts even though no hit proxy sits there.
+  return ui || Boolean(engine?.hitTest(x, y)) || containsPoint(regionRects, x, y);
+}
+// The window region the main process turns into the X11 input shape: the pet's
+// pose silhouette for the current action, the pose the animation is still
+// leaving, the HTML overlays and the particles in flight.
+const overlaySeen = new Map();
+let regionRects = [],
+  regionSent = [],
+  lastAction = null,
+  previousAction = null,
+  actionChangedAt = 0,
+  regionTimer;
+function overlayActive(element, visible) {
+  const now = performance.now();
+  if (visible) overlaySeen.set(element, now);
+  // Overlays fade out over ~0.3s and are painted until the fade finishes.
+  return visible || now - (overlaySeen.get(element) ?? -1e9) < 500;
+}
+function overlayRects() {
+  const rects = [];
+  const push = (element) => {
+    const b = element.getBoundingClientRect();
+    if (b.width >= 1 && b.height >= 1) rects.push([b.left, b.top, b.right, b.bottom]);
+  };
+  if (overlayActive(toolbar, toolbar.classList.contains('visible'))) push(toolbar);
+  if (overlayActive(bubble, bubble.classList.contains('visible'))) push(bubble);
+  for (const id of ['#combo-badge', '#focus-badge', '#pet-fallback']) {
+    const element = document.querySelector(id);
+    if (element && overlayActive(element, !element.hidden)) push(element);
+  }
+  return rects;
+}
+function refreshRegion() {
+  if (!engine) return;
+  const canvasSize = engine.canvasSize,
+    width = window.innerWidth,
+    height = window.innerHeight,
+    now = performance.now(),
+    action = engine.animator.action;
+  if (action !== lastAction) {
+    if (lastAction) previousAction = lastAction;
+    lastAction = action;
+    actionChangedAt = now;
+  }
+  const actions = [action];
+  if (previousAction && previousAction !== action && now - actionChangedAt < TRANSITION_MS)
+    actions.push(previousAction);
+  regionRects = mergeRects(
+    [
+      ...maskRectsFor(actions, canvasSize.width, canvasSize.height),
+      ...engine.effectRects(),
+      ...overlayRects(),
+    ],
+    width,
+    height,
+  );
+  if (!sameRects(regionRects, regionSent)) {
+    regionSent = regionRects.map((rect) => [...rect]);
+    bridge.region(toShapeRects(regionRects));
+  }
+}
+function notePointer(kind, detail) {
+  if (data.diag) bridge.pointer(kind, detail);
 }
 function setHit(value) {
   if (value !== lastHit) {
@@ -98,6 +170,9 @@ try {
     onEvent: (event, detail) => {
       if (event === 'tail-contact') chime('tailtap');
       if (event === 'catch') chime();
+      // A new action starts a damped pose transition: refresh the region at
+      // once so the poses it covers always include the one being drawn.
+      if (event === 'start') refreshRegion();
       if (event === 'drag-grip' && dragging && down) {
         // Ease from the pressed point to the visible tail. The native cursor
         // clock remains the sole owner of window movement.
@@ -110,6 +185,8 @@ try {
   });
   engine.applySettings(settings);
   bridge.on('action', action);
+  refreshRegion();
+  regionTimer = setInterval(refreshRegion, 40);
   bridge.on('combo', (combo) => {
     const badge = document.querySelector('#combo-badge');
     clearTimeout(comboTimer);
@@ -177,7 +254,8 @@ try {
   });
   canvas.addEventListener('pointerdown', (e) => {
     const hit = engine.hitTest(e.clientX, e.clientY);
-    if (e.button !== 0 || !hit) return;
+    if (e.button !== 0 || !(hit || containsPoint(regionRects, e.clientX, e.clientY))) return;
+    notePointer('down', { x: e.clientX, y: e.clientY, proxy: Boolean(hit) });
     down = {
       localX: e.clientX,
       localY: e.clientY,
@@ -236,7 +314,7 @@ try {
   });
   canvas.addEventListener('contextmenu', (e) => {
     e.preventDefault();
-    if (engine.hitTest(e.clientX, e.clientY)) bridge.menu();
+    if (pointerHit(e.clientX, e.clientY)) bridge.menu();
   });
   document.querySelector('#open-home').addEventListener('click', () => bridge.home());
   document.querySelector('#pet-menu').addEventListener('click', () => bridge.menu());
@@ -295,6 +373,7 @@ window.addEventListener('beforeunload', () => {
   clearTimeout(hoverTimer);
   clearTimeout(clickTimer);
   clearTimeout(comboTimer);
+  clearInterval(regionTimer);
   soundContext?.close();
   engine?.dispose();
 });
