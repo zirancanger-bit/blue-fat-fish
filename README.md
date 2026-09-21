@@ -2,7 +2,9 @@
 
 使用荆棘定稿的蓝色大肥鱼模型制作的独立 Windows 桌宠：鲸尾、斗篷、悬浮圆手与害羞表情。
 
-[下载 Windows 便携版](https://github.com/zirancanger-bit/blue-fat-fish/releases/latest)
+[下载 Windows 便携版](https://github.com/zirancanger-bit/blue-fat-fish/releases/tag/v1.2.0)
+
+[下载Linux适配版](https://github.com/zirancanger-bit/blue-fat-fish/releases/tag/v1.2.1)
 
 ![提尾巴晃动，会掉落米饭和草莓蛋糕](docs/drag-food.png)
 
